@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reaction Time Study</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #f7f7f8;
+      --card: #ffffff;
+      --text: #111111;
+      --muted: #5f6368;
+      --accent: #c62828;
+      --accent-dark: #8e0000;
+      --border: #e6e6e6;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+
+    .screen {
+      min-height: 100vh;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      width: min(720px, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 32px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.06);
+      text-align: center;
+    }
+
+    h1, h2 {
+      margin: 0 0 12px;
+      line-height: 1.15;
+    }
+
+    p {
+      margin: 0 0 16px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .row {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+
+    input {
+      width: min(320px, 100%);
+      padding: 14px 16px;
+      font-size: 16px;
+      border-radius: 12px;
+      border: 1px solid #d0d7de;
+      outline: none;
+    }
+
+    button {
+      padding: 14px 20px;
+      font-size: 16px;
+      font-weight: 600;
+      border: none;
+      border-radius: 12px;
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+      transition: transform 0.08s ease, background 0.2s ease;
+    }
+
+    button:hover { background: var(--accent-dark); }
+    button:active { transform: scale(0.98); }
+    button:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+
+    .hidden { display: none !important; }
+
+    #task-screen {
+      position: fixed;
+      inset: 0;
+      background: #ffffff;
+    }
+
+    #task-canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: crosshair;
+    }
+
+    #status {
+      margin-top: 14px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .stats {
+      margin: 20px 0 10px;
+      font-size: 18px;
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .substats {
+      font-size: 14px;
+      color: var(--muted);
+      margin-bottom: 18px;
+    }
+
+    .chart-wrap {
+      width: 100%;
+      margin-top: 18px;
+    }
+
+    #results-chart {
+      width: 100% !important;
+      height: 420px !important;
+    }
+
+    .note {
+      margin-top: 16px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <section id="welcome-screen" class="screen">
+    <div class="card">
+      <h1>Reaction Time Task</h1>
+      <p>Click the red circle as quickly as you can. You will complete 10 trials total.</p>
+      <div class="row">
+        <input id="participant-id" type="text" placeholder="Enter Participant ID (optional)" />
+        <button id="start-btn">Start Task</button>
+      </div>
+      <div id="status">If left blank, a random ID will be generated automatically.</div>
+    </div>
+  </section>
+
+  <section id="task-screen" class="hidden">
+    <canvas id="task-canvas"></canvas>
+  </section>
+
+  <section id="results-screen" class="screen hidden">
+    <div class="card">
+      <h2>Task Complete</h2>
+      <div id="user-stats" class="stats"></div>
+      <div id="extra-stats" class="substats"></div>
+      <div class="chart-wrap">
+        <canvas id="results-chart"></canvas>
+      </div>
+      <div id="comparison-note" class="note"></div>
+    </div>
+  </section>
+
+  <script>
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyDQft2ZaQxSZMBAo91KosZcW5b0KTgUwvjAyKc6E0N_PtuHqEZJaIYLYM2M5c0uwcI/exec";
+    const TOTAL_TRIALS = 10;
+    const CIRCLE_RADIUS = 50;
+    const APPEAR_DELAY_MS = 500;
+
+    const welcomeScreen = document.getElementById('welcome-screen');
+    const taskScreen = document.getElementById('task-screen');
+    const resultsScreen = document.getElementById('results-screen');
+    const startBtn = document.getElementById('start-btn');
+    const participantInput = document.getElementById('participant-id');
+    const statusEl = document.getElementById('status');
+    const userStatsEl = document.getElementById('user-stats');
+    const extraStatsEl = document.getElementById('extra-stats');
+    const comparisonNoteEl = document.getElementById('comparison-note');
+
+    const canvas = document.getElementById('task-canvas');
+    const ctx = canvas.getContext('2d');
+
+    let participantId = '';
+    let trialTimes = [];
+    let trialNumber = 0;
+    let circleVisible = false;
+    let circle = { x: 0, y: 0, r: CIRCLE_RADIUS };
+    let stimulusOnset = 0;
+    let chartInstance = null;
+
+    function randomId() {
+      return 'P-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+    }
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      if (circleVisible) {
+        drawCircle();
+      }
+    }
+
+    function clearCanvas() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function pickRandomCircleLocation() {
+      circle.x = Math.random() * (canvas.width - circle.r * 2) + circle.r;
+      circle.y = Math.random() * (canvas.height - circle.r * 2) + circle.r;
+    }
+
+    function drawCircle() {
+      clearCanvas();
+      ctx.beginPath();
+      ctx.arc(circle.x, circle.y, circle.r, 0, Math.PI * 2);
+      ctx.fillStyle = '#d32f2f';
+      ctx.fill();
+      ctx.closePath();
+      circleVisible = true;
+      stimulusOnset = performance.now();
+    }
+
+    function scheduleNextTrial() {
+      circleVisible = false;
+      clearCanvas();
+
+      if (trialNumber >= TOTAL_TRIALS) {
+        finishExperiment();
+        return;
+      }
+
+      setTimeout(() => {
+        pickRandomCircleLocation();
+        drawCircle();
+      }, APPEAR_DELAY_MS);
+    }
+
+    function startExperiment() {
+      participantId = participantInput.value.trim() || randomId();
+      trialTimes = [];
+      trialNumber = 0;
+      statusEl.textContent = `Participant ID: ${participantId}`;
+      welcomeScreen.classList.add('hidden');
+      resultsScreen.classList.add('hidden');
+      taskScreen.classList.remove('hidden');
+      resizeCanvas();
+      scheduleNextTrial();
+    }
+
+    async function submitAllTrials() {
+      const payload = {
+        Participant_ID: participantId,
+        trials: trialTimes.map((rt, index) => ({
+          Trial_Number: index + 1,
+          Reaction_Time: rt
+        }))
+      };
+
+      const response = await fetch(WEB_APP_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+
+      return response;
+    }
+
+    async function fetchHistoricalRTs() {
+      const response = await fetch(WEB_APP_URL);
+      if (!response.ok) {
+        throw new Error('Failed to fetch historical data.');
+      }
+      const data = await response.json();
+      if (!Array.isArray(data)) {
+        throw new Error('Historical data was not returned as an array.');
+      }
+      return data
+        .map(Number)
+        .filter(value => Number.isFinite(value) && value > 0);
+    }
+
+    function buildHistogram(values, binWidth = 50) {
+      if (!values.length) {
+        return { labels: [], counts: [], min: 0, max: 0, binWidth };
+      }
+
+      const min = Math.floor(Math.min(...values) / binWidth) * binWidth;
+      const max = Math.ceil(Math.max(...values) / binWidth) * binWidth;
+      const counts = [];
+      const labels = [];
+
+      for (let start = min; start <= max; start += binWidth) {
+        const end = start + binWidth - 1;
+        labels.push(`${start}-${end}`);
+        counts.push(0);
+      }
+
+      values.forEach(value => {
+        const index = Math.min(Math.floor((value - min) / binWidth), counts.length - 1);
+        if (index >= 0) counts[index] += 1;
+      });
+
+      return { labels, counts, min, max, binWidth };
+    }
+
+    const avgLinePlugin = {
+      id: 'avgLinePlugin',
+      afterDatasetsDraw(chart, args, pluginOptions) {
+        const avgValue = pluginOptions.avgValue;
+        const { ctx, chartArea, scales } = chart;
+        const xScale = scales.x;
+        if (!xScale || avgValue == null || !Number.isFinite(avgValue)) return;
+
+        const xPixel = xScale.getPixelForValue(avgValue);
+        if (xPixel < chartArea.left || xPixel > chartArea.right) return;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(xPixel, chartArea.top);
+        ctx.lineTo(xPixel, chartArea.bottom);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#d32f2f';
+        ctx.stroke();
+
+        ctx.fillStyle = '#d32f2f';
+        ctx.font = 'bold 12px Segoe UI, Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Your Avg', xPixel, chartArea.top - 8);
+        ctx.restore();
+      }
+    };
+
+    function renderChart(historicalData, userAverage) {
+      const chartCanvas = document.getElementById('results-chart');
+      const chartCtx = chartCanvas.getContext('2d');
+
+      if (chartInstance) {
+        chartInstance.destroy();
+      }
+
+      const allData = historicalData.length ? historicalData : [...trialTimes];
+      const hist = buildHistogram(allData, 50);
+
+      chartInstance = new Chart(chartCtx, {
+        type: 'bar',
+        data: {
+          labels: hist.labels,
+          datasets: [{
+            label: 'Frequency',
+            data: hist.counts,
+            backgroundColor: 'rgba(54, 162, 235, 0.65)',
+            borderColor: 'rgba(54, 162, 235, 1)',
+            borderWidth: 1,
+            barPercentage: 1,
+            categoryPercentage: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title(items) {
+                  return items[0]?.label ? `${items[0].label} ms` : '';
+                },
+                label(context) {
+                  return `Count: ${context.raw}`;
+                }
+              }
+            },
+            avgLinePlugin: { avgValue: userAverage }
+          },
+          scales: {
+            x: {
+              type: 'linear',
+              min: hist.min,
+              max: hist.max + hist.binWidth,
+              title: {
+                display: true,
+                text: 'Reaction Time (ms)'
+              },
+              ticks: {
+                stepSize: hist.binWidth,
+                callback(value) {
+                  return value;
+                }
+              }
+            },
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: 'Frequency'
+              },
+              ticks: {
+                precision: 0
+              }
+            }
+          }
+        },
+        plugins: [avgLinePlugin]
+      });
+    }
+
+    async function finishExperiment() {
+      taskScreen.classList.add('hidden');
+      resultsScreen.classList.remove('hidden');
+
+      const userAverage = trialTimes.reduce((sum, rt) => sum + rt, 0) / trialTimes.length;
+      const fastest = Math.min(...trialTimes);
+      const slowest = Math.max(...trialTimes);
+
+      userStatsEl.textContent = `Your average reaction time: ${userAverage.toFixed(2)} ms`;
+      extraStatsEl.textContent = `Fastest: ${fastest} ms • Slowest: ${slowest} ms • Trials completed: ${trialTimes.length}`;
+      comparisonNoteEl.textContent = 'Saving your data and loading comparison results...';
+
+      let historicalData = [];
+
+      try {
+        await submitAllTrials();
+      } catch (error) {
+        console.error(error);
+        comparisonNoteEl.textContent = 'Your task finished, but the trial data could not be saved. Double-check your Apps Script deployment settings.';
+        renderChart([], userAverage);
+        return;
+      }
+
+      try {
+        historicalData = await fetchHistoricalRTs();
+        if (historicalData.length === 0) {
+          comparisonNoteEl.textContent = 'Your data was saved. There is no historical comparison data yet, so the chart currently reflects the available trials.';
+        } else {
+          comparisonNoteEl.textContent = `Comparison data loaded from ${historicalData.length} recorded trial(s). The red line marks your average.`;
+        }
+      } catch (error) {
+        console.error(error);
+        comparisonNoteEl.textContent = 'Your data was saved, but the comparison data could not be loaded from the sheet.';
+      }
+
+      renderChart(historicalData, userAverage);
+    }
+
+    startBtn.addEventListener('click', () => {
+      startBtn.disabled = true;
+      startExperiment();
+    });
+
+    canvas.addEventListener('mousedown', event => {
+      if (!circleVisible) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const distance = Math.hypot(x - circle.x, y - circle.y);
+
+      if (distance <= circle.r) {
+        const reactionTime = Math.round(performance.now() - stimulusOnset);
+        trialTimes.push(reactionTime);
+        trialNumber += 1;
+        scheduleNextTrial();
+      }
+    });
+
+    window.addEventListener('resize', resizeCanvas);
+  </script>
+</body>
+</html>
